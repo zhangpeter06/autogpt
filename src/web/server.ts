@@ -70,8 +70,7 @@ function resolvePublicDir(): string | null {
   const moduleDir = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     join(moduleDir, "public"),
-    join(moduleDir, "..", "..", "src", "web", "public"),
-    join(process.cwd(), "src", "web", "public")
+    join(moduleDir, "..", "..", "src", "web", "public")
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
