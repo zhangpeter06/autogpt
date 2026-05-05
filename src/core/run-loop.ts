@@ -49,6 +49,16 @@ export async function runOnce(input: RunOnceInput): Promise<RunOnceResult> {
     return { status: "planned", taskCount: plannedTasks.length };
   }
 
+  if (queuedTask.requiresApproval || queuedTask.risk === "critical") {
+    const reason = "Task requires approval before execution";
+    await saveProjectState(projectRoot, {
+      ...state,
+      activeTaskId: null
+    });
+    await blockTask(projectRoot, queuedTask, reason);
+    return { status: "blocked", reason, taskId: queuedTask.id };
+  }
+
   const running = await updateTaskStatus(projectRoot, queuedTask.id, "running");
   await saveProjectState(projectRoot, {
     ...state,

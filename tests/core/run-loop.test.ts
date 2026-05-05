@@ -256,6 +256,52 @@ describe("runOnce", () => {
     }
   });
 
+  it("blocks critical tasks before codex execution", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "gptauto-run-critical-approval-"));
+    try {
+      await initProject({ projectRoot });
+      await setProjectGoal(projectRoot, "Build login");
+      const task = await enqueueTask(projectRoot, {
+        title: "Rewrite auth boundary",
+        source: "user",
+        risk: "critical",
+        contextFiles: ["src/auth.ts"],
+        acceptance: ["Auth boundary is reviewed"]
+      });
+      let codexCalled = false;
+
+      const result = await runOnce({
+        projectRoot,
+        executeCodex: async () => {
+          codexCalled = true;
+          throw new Error("codex must not run");
+        },
+        verify: async () => ({ ok: true, commands: [], risk: "low", findings: [] }),
+        changedFiles: async () => ["src/auth.ts"]
+      });
+
+      expect(result).toMatchObject({
+        status: "blocked",
+        taskId: task.id,
+        reason: "Task requires approval before execution"
+      });
+      expect(codexCalled).toBe(false);
+      const state = await loadProjectState(projectRoot);
+      expect(state.activeTaskId).toBeNull();
+
+      const tasks = await listTasks(projectRoot);
+      expect(tasks.blocked).toEqual([
+        expect.objectContaining({
+          id: task.id,
+          status: "blocked",
+          blocker: "Task requires approval before execution"
+        })
+      ]);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("blocks the running task after critical verification risk", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "gptauto-run-block-"));
     try {
