@@ -1,4 +1,5 @@
 import express from "express";
+import type { ErrorRequestHandler } from "express";
 import type { NextFunction, Request, Response } from "express";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -50,7 +51,11 @@ export function createWebServer(options: WebServerOptions) {
   const publicDir = resolvePublicDir();
   if (publicDir) {
     app.use(express.static(publicDir));
+  } else {
+    console.warn("gptauto web console public assets were not found; static UI will return 404.");
   }
+
+  app.use(apiErrorHandler);
 
   return app;
 }
@@ -70,3 +75,15 @@ function resolvePublicDir(): string | null {
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
+
+const apiErrorHandler: ErrorRequestHandler = (_error, req, res, next) => {
+  if (!req.path.startsWith("/api/")) {
+    next(_error);
+    return;
+  }
+  if (res.headersSent) {
+    next(_error);
+    return;
+  }
+  res.status(500).json({ error: "Internal server error" });
+};

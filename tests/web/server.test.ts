@@ -1,7 +1,10 @@
 import type { Server } from "node:http";
+import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { appendClaudeSync } from "../../src/agents/claude-sync.js";
 import { chooseOption } from "../../src/core/decisions.js";
@@ -10,6 +13,7 @@ import { initProject } from "../../src/core/project-state.js";
 import { blockTask, completeTask, enqueueTask } from "../../src/core/task-queue.js";
 import { createWebServer } from "../../src/web/server.js";
 
+const execFileAsync = promisify(execFile);
 const servers: Server[] = [];
 const tempDirs: string[] = [];
 
@@ -29,6 +33,7 @@ afterEach(async () => {
     )
   );
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  await rm(resolve("dist"), { recursive: true, force: true });
 });
 
 describe("web server", () => {
@@ -125,14 +130,39 @@ describe("web server", () => {
     await expect(response.text()).resolves.toContain("gptauto Web Console");
   });
 
-  it("passes async route failures to Express error handling", async () => {
+  it("returns sanitized JSON for API route failures", async () => {
     const projectRoot = await makeProject();
     await writeFile(getGptautoPaths(projectRoot).taskQueue, "{invalid json", "utf8");
     const baseUrl = await listen(projectRoot);
 
     const response = await fetch(`${baseUrl}/api/tasks`);
+    const body = await response.text();
 
     expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(JSON.parse(body)).toEqual({ error: "Internal server error" });
+    expect(body).not.toContain("SyntaxError");
+    expect(body).not.toContain("JSON.parse");
+    expect(body).not.toContain(projectRoot);
+    expect(body).not.toContain(resolve("."));
+  });
+
+  it("serves source static assets when running from the compiled server without dist public assets", async () => {
+    const projectRoot = await makeProject();
+    await execFileAsync(process.execPath, [resolve("node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.json"], {
+      cwd: resolve(".")
+    });
+    await rm(resolve("dist", "web", "public"), { recursive: true, force: true });
+    const module = (await import(pathToFileURL(resolve("dist", "web", "server.js")).href)) as {
+      createWebServer: typeof createWebServer;
+    };
+    const baseUrl = await listen(projectRoot, module.createWebServer);
+
+    const response = await fetch(`${baseUrl}/`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    await expect(response.text()).resolves.toContain("gptauto Web Console");
   });
 });
 
@@ -143,8 +173,8 @@ async function makeProject(): Promise<string> {
   return projectRoot;
 }
 
-async function listen(projectRoot: string): Promise<string> {
-  const app = createWebServer({ projectRoot });
+async function listen(projectRoot: string, serverFactory = createWebServer): Promise<string> {
+  const app = serverFactory({ projectRoot });
   const server = app.listen(0);
   servers.push(server);
   await new Promise<void>((resolve) => server.once("listening", resolve));
