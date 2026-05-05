@@ -1,11 +1,12 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, open, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { appendClaudeSync } from "../agents/claude-sync.js";
 import { runCodexTask } from "../agents/codex-cli.js";
 import { planFromGoal } from "../agents/local-planner.js";
 import { getChangedFiles } from "../verifier/git.js";
 import { verifyProject } from "../verifier/verifier.js";
 import { writeHandoff } from "./handoff.js";
-import { getRunDir } from "./paths.js";
+import { getGptautoPaths, getRunDir } from "./paths.js";
 import { loadProjectConfig, loadProjectState, saveProjectState } from "./project-state.js";
 import { writeRunReport } from "./reports.js";
 import {
@@ -22,6 +23,7 @@ export interface RunOnceInput {
   projectRoot: string;
   executeCodex?: (task: Task) => Promise<CommandResult>;
   verify?: (input: { commands: string[]; changedFiles: string[] }) => Promise<VerificationResult>;
+  preflightChangedFiles?: () => Promise<string[]>;
   changedFiles?: () => Promise<string[]>;
 }
 
@@ -32,6 +34,10 @@ export type RunOnceResult =
   | { status: "blocked"; reason: string; runId?: string; taskId?: string };
 
 export async function runOnce(input: RunOnceInput): Promise<RunOnceResult> {
+  return withRunLock(input.projectRoot, () => runOnceUnlocked(input));
+}
+
+async function runOnceUnlocked(input: RunOnceInput): Promise<RunOnceResult> {
   const { projectRoot } = input;
   const config = await loadProjectConfig(projectRoot);
   const state = await loadProjectState(projectRoot);
@@ -46,11 +52,29 @@ export async function runOnce(input: RunOnceInput): Promise<RunOnceResult> {
     for (const task of plannedTasks) {
       await enqueueTask(projectRoot, task);
     }
+    await appendClaudeSync(projectRoot, {
+      type: "planning_fallback",
+      summary: `Local planner created ${plannedTasks.length} task(s) for goal: ${state.goal}`,
+      changedFiles: [],
+      nextPlanUsedWithoutClaude: true
+    });
     return { status: "planned", taskCount: plannedTasks.length };
   }
 
   if (queuedTask.requiresApproval || queuedTask.risk === "critical") {
     const reason = "Task requires approval before execution";
+    await saveProjectState(projectRoot, {
+      ...state,
+      activeTaskId: null
+    });
+    await blockTask(projectRoot, queuedTask, reason);
+    return { status: "blocked", reason, taskId: queuedTask.id };
+  }
+
+  const preflightChangedFiles = await (input.preflightChangedFiles ?? (() => getChangedFiles(projectRoot)))();
+  const userChangedFiles = preflightChangedFiles.filter(isUserWorktreeChange);
+  if (userChangedFiles.length > 0) {
+    const reason = `Uncommitted worktree changes require approval before execution: ${formatFileList(userChangedFiles)}`;
     await saveProjectState(projectRoot, {
       ...state,
       activeTaskId: null
@@ -108,6 +132,29 @@ export async function runOnce(input: RunOnceInput): Promise<RunOnceResult> {
     await clearActiveRun(projectRoot, state, runId);
     await blockTask(projectRoot, running, reason);
     return { status: "blocked", reason, runId, taskId: running.id };
+  }
+}
+
+async function withRunLock(projectRoot: string, action: () => Promise<RunOnceResult>): Promise<RunOnceResult> {
+  const lockPath = getGptautoPaths(projectRoot).runLock;
+  await mkdir(dirname(lockPath), { recursive: true });
+
+  let handle;
+  try {
+    handle = await open(lockPath, "wx");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return { status: "blocked", reason: "Another gptauto run is already active" };
+    }
+    throw error;
+  }
+
+  try {
+    await handle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`, "utf8");
+    return await action();
+  } finally {
+    await handle.close();
+    await rm(lockPath, { force: true });
   }
 }
 
@@ -194,6 +241,12 @@ async function writeRunArtifacts(input: {
     blockers: input.blockers,
     nextAction: input.status === "completed" ? "Pick the next queued task" : "Inspect verification findings and repair"
   });
+  await appendClaudeSync(input.projectRoot, {
+    type: "execution_report",
+    summary: `${input.status}: ${input.task.title}`,
+    changedFiles: input.changedFiles,
+    nextPlanUsedWithoutClaude: false
+  });
 }
 
 async function safeWriteFailureArtifacts(input: {
@@ -248,6 +301,16 @@ function failedVerification(finding: string, risk: RiskLevel): VerificationResul
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isUserWorktreeChange(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  return normalized !== ".gptauto" && !normalized.startsWith(".gptauto/");
+}
+
+function formatFileList(filePaths: string[]): string {
+  const visibleFiles = filePaths.slice(0, 5).join(", ");
+  return filePaths.length > 5 ? `${visibleFiles}, and ${filePaths.length - 5} more` : visibleFiles;
 }
 
 function formatCodexOutput(result: CommandResult): string {

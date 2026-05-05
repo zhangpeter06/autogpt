@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWebServer } from "../../src/web/server.js";
 import { chooseOption } from "../../src/core/decisions.js";
-import { resolveRunMaxTasks } from "../../src/cli/index.js";
+import { resolveRunMaxTasks, shouldStopRunLoop } from "../../src/cli/index.js";
 import type { Server } from "node:http";
 
 const execFileAsync = promisify(execFile);
@@ -84,6 +84,14 @@ describe("cli commands", () => {
     expect(resolveRunMaxTasks({ overnight: true })).toBe(50);
     expect(resolveRunMaxTasks({ overnight: true, maxTasks: "3" })).toBe(3);
     expect(resolveRunMaxTasks({ overnight: false })).toBe(1);
+  });
+
+  it("stops overnight loops when a repair task is queued", () => {
+    expect(shouldStopRunLoop({ status: "repair_queued", runId: "run_1", taskId: "task_1", repairTaskId: "task_2" })).toBe(
+      true
+    );
+    expect(shouldStopRunLoop({ status: "blocked", reason: "requires approval", taskId: "task_1" })).toBe(true);
+    expect(shouldStopRunLoop({ status: "completed", runId: "run_1", taskId: "task_1" })).toBe(false);
   });
 });
 

@@ -22,17 +22,21 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
   await mkdir(paths.locksDir, { recursive: true });
 
   const now = new Date().toISOString();
+  const existingConfig = await readJsonIfExists<ProjectConfig>(paths.config);
   const config: ProjectConfig = {
     projectRoot: options.projectRoot,
-    aggression: options.aggression ?? "balanced",
-    testCommands: options.testCommands ?? ["npm test"],
-    lintCommands: options.lintCommands ?? [],
-    typecheckCommands: options.typecheckCommands ?? ["npm run typecheck"],
-    codexCommand: options.codexCommand ?? "codex",
-    ...(options.claudeCommand ? { claudeCommand: options.claudeCommand } : {})
+    aggression: options.aggression ?? existingConfig?.aggression ?? "balanced",
+    testCommands: options.testCommands ?? existingConfig?.testCommands ?? ["npm test"],
+    lintCommands: options.lintCommands ?? existingConfig?.lintCommands ?? [],
+    typecheckCommands: options.typecheckCommands ?? existingConfig?.typecheckCommands ?? ["npm run typecheck"],
+    codexCommand: options.codexCommand ?? existingConfig?.codexCommand ?? "codex",
+    ...(options.claudeCommand ?? existingConfig?.claudeCommand
+      ? { claudeCommand: options.claudeCommand ?? existingConfig?.claudeCommand }
+      : {})
   };
 
-  const state: ProjectState = {
+  const existingState = await readJsonIfExists<ProjectState>(paths.state);
+  const state: ProjectState = existingState ?? {
     version: 1,
     goal: null,
     activeTaskId: null,
@@ -42,7 +46,9 @@ export async function initProject(options: InitProjectOptions): Promise<void> {
   };
 
   await writeJsonFile(paths.config, config);
-  await writeJsonFile(paths.state, state);
+  if (!existingState) {
+    await writeJsonFile(paths.state, state);
+  }
   await writeFile(paths.taskQueue, "", { flag: "a" });
   await writeFile(paths.completedTasks, "", { flag: "a" });
   await writeFile(paths.blockedTasks, "", { flag: "a" });
@@ -72,4 +78,15 @@ export async function setProjectGoal(projectRoot: string, goal: string): Promise
   const next = { ...state, goal, updatedAt: new Date().toISOString() };
   await saveProjectState(projectRoot, next);
   return next;
+}
+
+async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8")) as T;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
 }

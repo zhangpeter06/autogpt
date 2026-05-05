@@ -3,7 +3,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { getGptautoPaths } from "../../src/core/paths.js";
-import { initProject, loadProjectConfig, loadProjectState } from "../../src/core/project-state.js";
+import {
+  initProject,
+  loadProjectConfig,
+  loadProjectState,
+  saveProjectState,
+  setProjectGoal
+} from "../../src/core/project-state.js";
 
 describe("getGptautoPaths", () => {
   it("derives all state paths under the project .gptauto directory", async () => {
@@ -40,6 +46,31 @@ describe("initProject", () => {
       await expect(readFile(paths.taskQueue, "utf8")).resolves.toBe("");
       await expect(readFile(paths.completedTasks, "utf8")).resolves.toBe("");
       await expect(readFile(paths.blockedTasks, "utf8")).resolves.toBe("");
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves recovery state when init is rerun", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "gptauto-init-preserve-"));
+    try {
+      await initProject({ projectRoot, aggression: "balanced" });
+      const withGoal = await setProjectGoal(projectRoot, "Keep building");
+      await saveProjectState(projectRoot, {
+        ...withGoal,
+        activeTaskId: "task_123",
+        lastRunId: "run_123"
+      });
+
+      await initProject({ projectRoot, aggression: "aggressive" });
+
+      const config = await loadProjectConfig(projectRoot);
+      const state = await loadProjectState(projectRoot);
+      expect(config.aggression).toBe("aggressive");
+      expect(state.goal).toBe("Keep building");
+      expect(state.activeTaskId).toBe("task_123");
+      expect(state.lastRunId).toBe("run_123");
+      expect(state.createdAt).toBe(withGoal.createdAt);
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
     }

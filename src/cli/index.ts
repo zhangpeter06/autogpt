@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { listClaudeSync } from "../agents/claude-sync.js";
 import { listDecisions } from "../core/decisions.js";
 import { initProject, loadProjectState, setProjectGoal } from "../core/project-state.js";
-import { runOnce } from "../core/run-loop.js";
+import { runOnce, type RunOnceResult } from "../core/run-loop.js";
 import { listTasks } from "../core/task-queue.js";
 import type { Aggression } from "../core/types.js";
 import { createWebServer } from "../web/server.js";
@@ -51,7 +51,7 @@ program
       }
       const result = await runOnce({ projectRoot: resolve(options.project) });
       console.log(JSON.stringify(result, null, 2));
-      if (result.status === "blocked") {
+      if (shouldStopRunLoop(result)) {
         break;
       }
     }
@@ -149,6 +149,10 @@ export function resolveRunMaxTasks(options: { overnight?: boolean; maxTasks?: st
     return parsePositiveInteger(options.maxTasks, "--max-tasks");
   }
   return options.overnight ? OVERNIGHT_MAX_TASKS : 1;
+}
+
+export function shouldStopRunLoop(result: RunOnceResult): boolean {
+  return result.status === "blocked" || result.status === "repair_queued";
 }
 
 function isCliEntrypoint(): boolean {
