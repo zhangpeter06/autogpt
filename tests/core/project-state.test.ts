@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { getGptautoPaths } from "../../src/core/paths.js";
+import { initProject, loadProjectConfig, loadProjectState } from "../../src/core/project-state.js";
 
 describe("getGptautoPaths", () => {
   it("derives all state paths under the project .gptauto directory", async () => {
@@ -18,6 +19,27 @@ describe("getGptautoPaths", () => {
       expect(paths.decisions).toBe(join(projectRoot, ".gptauto", "decisions", "decisions.jsonl"));
       expect(paths.claudeSync).toBe(join(projectRoot, ".gptauto", "reports", "claude-sync.jsonl"));
       expect(paths.runLock).toBe(join(projectRoot, ".gptauto", "locks", "run.lock"));
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("initProject", () => {
+  it("creates the gptauto directory layout and default files", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "gptauto-init-"));
+    try {
+      await initProject({ projectRoot, aggression: "aggressive" });
+      const paths = getGptautoPaths(projectRoot);
+      const config = await loadProjectConfig(projectRoot);
+      const state = await loadProjectState(projectRoot);
+      expect(config.projectRoot).toBe(projectRoot);
+      expect(config.aggression).toBe("aggressive");
+      expect(state.version).toBe(1);
+      expect(state.goal).toBeNull();
+      await expect(readFile(paths.taskQueue, "utf8")).resolves.toBe("");
+      await expect(readFile(paths.completedTasks, "utf8")).resolves.toBe("");
+      await expect(readFile(paths.blockedTasks, "utf8")).resolves.toBe("");
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
     }
