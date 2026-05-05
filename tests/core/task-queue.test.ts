@@ -6,6 +6,7 @@ import { initProject } from "../../src/core/project-state.js";
 import {
   blockTask,
   completeTask,
+  createRepairTask,
   enqueueTask,
   listTasks,
   nextQueuedTask,
@@ -70,6 +71,36 @@ describe("task queue", () => {
 
       await expect(nextQueuedTask(projectRoot)).resolves.toBeNull();
       await expect(listTasks(projectRoot)).resolves.toMatchObject({ queued: [] });
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("creates repair tasks with repair queued status", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "gptauto-queue-repair-"));
+    try {
+      await initProject({ projectRoot });
+      const task = await enqueueTask(projectRoot, {
+        title: "Fix dashboard filters",
+        source: "codex",
+        risk: "medium",
+        contextFiles: ["src/Dashboard.tsx"],
+        acceptance: ["Filters preserve selected values"]
+      });
+      const failedTask = await completeTask(projectRoot, task.id);
+
+      const repairTask = await createRepairTask(projectRoot, failedTask, "Filter state reset during verification");
+
+      expect(repairTask).toMatchObject({
+        status: "repair_queued",
+        source: "repair",
+        parentTaskId: failedTask.id,
+        acceptance: ["Fix verification failure: Filter state reset during verification"]
+      });
+      await expect(nextQueuedTask(projectRoot)).resolves.toMatchObject({
+        id: repairTask.id,
+        status: "repair_queued"
+      });
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
     }

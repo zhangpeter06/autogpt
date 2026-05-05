@@ -20,25 +20,7 @@ export interface TaskLists {
 const CLOSED_STATUSES = new Set<TaskStatus>(["completed", "blocked", "cancelled"]);
 
 export async function enqueueTask(projectRoot: string, input: NewTaskInput): Promise<Task> {
-  const now = new Date().toISOString();
-  const task: Task = {
-    id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    project: projectRoot,
-    title: input.title,
-    source: input.source,
-    status: "queued",
-    risk: input.risk,
-    attempts: 0,
-    maxAttempts: 3,
-    requiresApproval: input.risk === "critical",
-    contextFiles: input.contextFiles,
-    acceptance: input.acceptance,
-    createdAt: now,
-    updatedAt: now,
-    ...(input.parentTaskId ? { parentTaskId: input.parentTaskId } : {})
-  };
-  await appendJsonl(getGptautoPaths(projectRoot).taskQueue, task);
-  return task;
+  return createTask(projectRoot, input, "queued");
 }
 
 export async function listTasks(projectRoot: string): Promise<TaskLists> {
@@ -94,14 +76,40 @@ export async function blockTask(projectRoot: string, task: Task, blocker: string
 }
 
 export async function createRepairTask(projectRoot: string, failedTask: Task, reason: string): Promise<Task> {
-  return enqueueTask(projectRoot, {
-    title: `Repair: ${failedTask.title}`,
-    source: "repair",
-    risk: failedTask.risk,
-    contextFiles: failedTask.contextFiles,
-    acceptance: [`Fix verification failure: ${reason}`],
-    parentTaskId: failedTask.id
-  });
+  return createTask(
+    projectRoot,
+    {
+      title: `Repair: ${failedTask.title}`,
+      source: "repair",
+      risk: failedTask.risk,
+      contextFiles: failedTask.contextFiles,
+      acceptance: [`Fix verification failure: ${reason}`],
+      parentTaskId: failedTask.id
+    },
+    "repair_queued"
+  );
+}
+
+async function createTask(projectRoot: string, input: NewTaskInput, status: "queued" | "repair_queued"): Promise<Task> {
+  const now = new Date().toISOString();
+  const task: Task = {
+    id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    project: projectRoot,
+    title: input.title,
+    source: input.source,
+    status,
+    risk: input.risk,
+    attempts: 0,
+    maxAttempts: 3,
+    requiresApproval: input.risk === "critical",
+    contextFiles: input.contextFiles,
+    acceptance: input.acceptance,
+    createdAt: now,
+    updatedAt: now,
+    ...(input.parentTaskId ? { parentTaskId: input.parentTaskId } : {})
+  };
+  await appendJsonl(getGptautoPaths(projectRoot).taskQueue, task);
+  return task;
 }
 
 function compactLatest(tasks: Task[]): Task[] {
