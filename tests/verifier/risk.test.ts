@@ -6,6 +6,12 @@ describe("classifyRiskFromDiffSummary", () => {
     expect(classifyRiskFromDiffSummary([".env", "src/app.ts"])).toBe("critical");
   });
 
+  it("flags nested secret file edits as critical", () => {
+    expect(classifyRiskFromDiffSummary(["apps/api/.env"])).toBe("critical");
+    expect(classifyRiskFromDiffSummary(["services/web/.env.local"])).toBe("critical");
+    expect(classifyRiskFromDiffSummary(["packages/foo/.npmrc"])).toBe("critical");
+  });
+
   it("flags large deletion sets as critical", () => {
     const files = Array.from({ length: 51 }, (_, index) => `src/file-${index}.ts`);
     expect(classifyRiskFromDiffSummary(files)).toBe("critical");

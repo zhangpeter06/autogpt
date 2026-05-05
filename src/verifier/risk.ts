@@ -3,7 +3,7 @@ import type { RiskLevel } from "../core/types.js";
 const secretFileNames = new Set([".env", ".env.local", ".env.production", ".npmrc"]);
 
 export function classifyRiskFromDiffSummary(changedFiles: string[]): RiskLevel {
-  if (changedFiles.some((file) => secretFileNames.has(file) || file.includes("secret") || file.includes("credential"))) {
+  if (changedFiles.some((file) => secretFileNames.has(file.split(/[\\/]/).at(-1) ?? file) || file.includes("secret") || file.includes("credential"))) {
     return "critical";
   }
   if (changedFiles.length > 50) {
