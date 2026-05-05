@@ -16,7 +16,7 @@ import {
   nextQueuedTask,
   updateTaskStatus
 } from "./task-queue.js";
-import type { CommandResult, Task, VerificationResult } from "./types.js";
+import type { CommandResult, RiskLevel, Task, VerificationResult } from "./types.js";
 
 export interface RunOnceInput {
   projectRoot: string;
@@ -59,19 +59,54 @@ export async function runOnce(input: RunOnceInput): Promise<RunOnceResult> {
   const runDir = getRunDir(projectRoot, runId);
   await mkdir(runDir, { recursive: true });
 
-  const executeCodex =
-    input.executeCodex ??
-    ((task: Task) =>
-      runCodexTask({
-        projectRoot,
-        codexCommand: config.codexCommand,
-        task
-      }));
-  const codexResult = await executeCodex(running);
-  await writeFile(join(runDir, "codex-output.md"), formatCodexOutput(codexResult), "utf8");
+  try {
+    const executeCodex =
+      input.executeCodex ??
+      ((task: Task) =>
+        runCodexTask({
+          projectRoot,
+          codexCommand: config.codexCommand,
+          task
+        }));
+    const codexResult = await executeCodex(running);
+    await writeFile(join(runDir, "codex-output.md"), formatCodexOutput(codexResult), "utf8");
 
-  const changedFiles = await (input.changedFiles ?? (() => getChangedFiles(projectRoot)))();
-  const commands = [...config.testCommands, ...config.lintCommands, ...config.typecheckCommands];
+    const changedFiles = await (input.changedFiles ?? (() => getChangedFiles(projectRoot)))();
+    const commands = [...config.testCommands, ...config.lintCommands, ...config.typecheckCommands];
+    const verification =
+      codexResult.exitCode === 0
+        ? await runVerifier(input, projectRoot, commands, changedFiles)
+        : failedVerification(`Codex command failed with exit code ${codexResult.exitCode ?? "null"}`, running.risk);
+
+    return finalizeRun({
+      projectRoot,
+      state,
+      runId,
+      task: running,
+      changedFiles,
+      verification
+    });
+  } catch (error) {
+    const reason = `Run loop failed: ${errorMessage(error)}`;
+    await safeWriteFailureArtifacts({
+      projectRoot,
+      state,
+      runId,
+      task: running,
+      reason
+    });
+    await clearActiveRun(projectRoot, state, runId);
+    await blockTask(projectRoot, running, reason);
+    return { status: "blocked", reason, runId, taskId: running.id };
+  }
+}
+
+async function runVerifier(
+  input: RunOnceInput,
+  projectRoot: string,
+  commands: string[],
+  changedFiles: string[]
+): Promise<VerificationResult> {
   const verify =
     input.verify ??
     ((verifyInput: { commands: string[]; changedFiles: string[] }) =>
@@ -80,46 +115,129 @@ export async function runOnce(input: RunOnceInput): Promise<RunOnceResult> {
         commands: verifyInput.commands,
         changedFiles: verifyInput.changedFiles
       }));
-  const verification = await verify({ commands, changedFiles });
-  await writeFile(join(runDir, "verification.json"), `${JSON.stringify(verification, null, 2)}\n`, "utf8");
+  return verify({ commands, changedFiles });
+}
+
+async function finalizeRun(input: {
+  projectRoot: string;
+  state: Awaited<ReturnType<typeof loadProjectState>>;
+  runId: string;
+  task: Task;
+  changedFiles: string[];
+  verification: VerificationResult;
+}): Promise<RunOnceResult> {
+  const { projectRoot, state, runId, task, changedFiles, verification } = input;
+  await writeFile(join(getRunDir(projectRoot, runId), "verification.json"), `${JSON.stringify(verification, null, 2)}\n`, "utf8");
 
   const status = verification.risk === "critical" ? "blocked" : verification.ok ? "completed" : "repair_queued";
-  const reportPath = await writeRunReport(projectRoot, runId, {
-    taskTitle: running.title,
+  await writeRunArtifacts({
+    projectRoot,
+    state,
+    runId,
+    task,
     status,
     changedFiles,
-    verificationOk: verification.ok,
-    findings: verification.findings
+    verification,
+    blockers: status === "blocked" ? ["Critical verification risk"] : []
   });
-  await writeHandoff(projectRoot, runId, {
-    goal: state.goal ?? "No project goal is configured",
-    currentTask: running.title,
-    lastCompletedTask: status === "completed" ? running.title : null,
-    changedFiles,
-    verification: verification.ok ? "Passed" : "Failed",
-    decisions: [`Run report written to ${reportPath}`],
-    blockers: status === "blocked" ? ["Critical verification risk"] : [],
-    nextAction: status === "completed" ? "Pick the next queued task" : "Inspect verification findings and repair"
-  });
+  await clearActiveRun(projectRoot, state, runId);
 
+  if (verification.risk === "critical") {
+    await blockTask(projectRoot, task, "Critical verification risk");
+    return { status: "blocked", reason: "Critical verification risk", runId, taskId: task.id };
+  }
+
+  if (verification.ok) {
+    await completeTask(projectRoot, task.id);
+    return { status: "completed", runId, taskId: task.id };
+  }
+
+  await blockTask(projectRoot, task, "Verification failed; repair task queued");
+  const repairTask = await createRepairTask(projectRoot, task, verification.findings.join("; ") || "Verification failed");
+  return { status: "repair_queued", runId, taskId: task.id, repairTaskId: repairTask.id };
+}
+
+async function writeRunArtifacts(input: {
+  projectRoot: string;
+  state: Awaited<ReturnType<typeof loadProjectState>>;
+  runId: string;
+  task: Task;
+  status: "completed" | "repair_queued" | "blocked";
+  changedFiles: string[];
+  verification: VerificationResult;
+  blockers: string[];
+}): Promise<void> {
+  const reportPath = await writeRunReport(input.projectRoot, input.runId, {
+    taskTitle: input.task.title,
+    status: input.status,
+    changedFiles: input.changedFiles,
+    verificationOk: input.verification.ok,
+    findings: input.verification.findings
+  });
+  await writeHandoff(input.projectRoot, input.runId, {
+    goal: input.state.goal ?? "No project goal is configured",
+    currentTask: input.task.title,
+    lastCompletedTask: input.status === "completed" ? input.task.title : null,
+    changedFiles: input.changedFiles,
+    verification: input.verification.ok ? "Passed" : `Failed: ${input.verification.findings.join("; ")}`,
+    decisions: [`Run report written to ${reportPath}`],
+    blockers: input.blockers,
+    nextAction: input.status === "completed" ? "Pick the next queued task" : "Inspect verification findings and repair"
+  });
+}
+
+async function safeWriteFailureArtifacts(input: {
+  projectRoot: string;
+  state: Awaited<ReturnType<typeof loadProjectState>>;
+  runId: string;
+  task: Task;
+  reason: string;
+}): Promise<void> {
+  const verification = failedVerification(input.reason, "critical");
+  try {
+    await writeFile(
+      join(getRunDir(input.projectRoot, input.runId), "verification.json"),
+      `${JSON.stringify(verification, null, 2)}\n`,
+      "utf8"
+    );
+    await writeRunArtifacts({
+      projectRoot: input.projectRoot,
+      state: input.state,
+      runId: input.runId,
+      task: input.task,
+      status: "blocked",
+      changedFiles: [],
+      verification,
+      blockers: [input.reason]
+    });
+  } catch {
+    // State cleanup and task blocking still need to happen if artifact recovery fails.
+  }
+}
+
+async function clearActiveRun(
+  projectRoot: string,
+  state: Awaited<ReturnType<typeof loadProjectState>>,
+  runId: string
+): Promise<void> {
   await saveProjectState(projectRoot, {
     ...state,
     activeTaskId: null,
     lastRunId: runId
   });
+}
 
-  if (verification.risk === "critical") {
-    await blockTask(projectRoot, running, "Critical verification risk");
-    return { status: "blocked", reason: "Critical verification risk", runId, taskId: running.id };
-  }
+function failedVerification(finding: string, risk: RiskLevel): VerificationResult {
+  return {
+    ok: false,
+    commands: [],
+    risk,
+    findings: [finding]
+  };
+}
 
-  if (verification.ok) {
-    await completeTask(projectRoot, running.id);
-    return { status: "completed", runId, taskId: running.id };
-  }
-
-  const repairTask = await createRepairTask(projectRoot, running, verification.findings.join("; ") || "Verification failed");
-  return { status: "repair_queued", runId, taskId: running.id, repairTaskId: repairTask.id };
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function formatCodexOutput(result: CommandResult): string {
