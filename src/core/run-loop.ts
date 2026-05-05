@@ -52,7 +52,7 @@ async function runOnceUnlocked(input: RunOnceInput): Promise<RunOnceResult> {
     for (const task of plannedTasks) {
       await enqueueTask(projectRoot, task);
     }
-    await appendClaudeSync(projectRoot, {
+    await appendClaudeSyncNonBlocking(projectRoot, {
       type: "planning_fallback",
       summary: `Local planner created ${plannedTasks.length} task(s) for goal: ${state.goal}`,
       changedFiles: [],
@@ -112,7 +112,7 @@ async function runOnceUnlocked(input: RunOnceInput): Promise<RunOnceResult> {
         ? await runVerifier(input, projectRoot, commands, changedFiles)
         : failedVerification(`Codex command failed with exit code ${codexResult.exitCode ?? "null"}`, running.risk);
 
-    return finalizeRun({
+    return await finalizeRun({
       projectRoot,
       state,
       runId,
@@ -241,12 +241,23 @@ async function writeRunArtifacts(input: {
     blockers: input.blockers,
     nextAction: input.status === "completed" ? "Pick the next queued task" : "Inspect verification findings and repair"
   });
-  await appendClaudeSync(input.projectRoot, {
+  await appendClaudeSyncNonBlocking(input.projectRoot, {
     type: "execution_report",
     summary: `${input.status}: ${input.task.title}`,
     changedFiles: input.changedFiles,
     nextPlanUsedWithoutClaude: false
   });
+}
+
+async function appendClaudeSyncNonBlocking(
+  projectRoot: string,
+  record: Parameters<typeof appendClaudeSync>[1]
+): Promise<void> {
+  try {
+    await appendClaudeSync(projectRoot, record);
+  } catch {
+    // Claude synchronization is an external handoff aid; core task state must stay recoverable if it fails.
+  }
 }
 
 async function safeWriteFailureArtifacts(input: {

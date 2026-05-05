@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { listClaudeSync } from "../../src/agents/claude-sync.js";
-import { getRunDir } from "../../src/core/paths.js";
+import { getGptautoPaths, getRunDir } from "../../src/core/paths.js";
 import { initProject, loadProjectState, setProjectGoal } from "../../src/core/project-state.js";
 import { enqueueTask, listTasks } from "../../src/core/task-queue.js";
 import { runOnce } from "../../src/core/run-loop.js";
@@ -93,6 +93,49 @@ describe("runOnce", () => {
           nextPlanUsedWithoutClaude: false
         })
       ]);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not wedge completed runs when Claude sync cannot be written", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "gptauto-run-sync-fail-"));
+    try {
+      await initProject({ projectRoot });
+      await setProjectGoal(projectRoot, "Build login");
+      const paths = getGptautoPaths(projectRoot);
+      await unlink(paths.claudeSync);
+      await mkdir(paths.claudeSync);
+      const task = await enqueueTask(projectRoot, {
+        title: "Add login form",
+        source: "user",
+        risk: "medium",
+        contextFiles: ["src/Login.tsx"],
+        acceptance: ["Login form renders"]
+      });
+
+      const result = await runOnce({
+        projectRoot,
+        preflightChangedFiles: async () => [],
+        executeCodex: async () => ({
+          command: "codex",
+          cwd: projectRoot,
+          exitCode: 0,
+          stdout: "implemented",
+          stderr: "",
+          durationMs: 7
+        }),
+        verify: async () => ({ ok: true, commands: [], risk: "low", findings: [] }),
+        changedFiles: async () => ["src/Login.tsx"]
+      });
+
+      expect(result).toMatchObject({ status: "completed", taskId: task.id });
+      const state = await loadProjectState(projectRoot);
+      expect(state.activeTaskId).toBeNull();
+      const tasks = await listTasks(projectRoot);
+      expect(tasks.completed).toEqual([expect.objectContaining({ id: task.id })]);
+      expect(tasks.blocked).toHaveLength(0);
+      expect(tasks.queued).toHaveLength(0);
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
     }
