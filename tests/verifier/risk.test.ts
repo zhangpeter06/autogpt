@@ -12,6 +12,13 @@ describe("classifyRiskFromDiffSummary", () => {
     expect(classifyRiskFromDiffSummary(["packages/foo/.npmrc"])).toBe("critical");
   });
 
+  it("flags env variants and case-insensitive secret paths as critical", () => {
+    expect(classifyRiskFromDiffSummary(["apps/api/.env.staging"])).toBe("critical");
+    expect(classifyRiskFromDiffSummary([".env.development"])).toBe("critical");
+    expect(classifyRiskFromDiffSummary(["src/Secrets.ts"])).toBe("critical");
+    expect(classifyRiskFromDiffSummary(["config/CREDENTIALS.json"])).toBe("critical");
+  });
+
   it("flags large deletion sets as critical", () => {
     const files = Array.from({ length: 51 }, (_, index) => `src/file-${index}.ts`);
     expect(classifyRiskFromDiffSummary(files)).toBe("critical");

@@ -1,9 +1,13 @@
 import type { RiskLevel } from "../core/types.js";
 
-const secretFileNames = new Set([".env", ".env.local", ".env.production", ".npmrc"]);
+function isSecretFile(file: string): boolean {
+  const normalized = file.toLowerCase();
+  const basename = normalized.split(/[\\/]/).at(-1) ?? normalized;
+  return basename === ".env" || basename.startsWith(".env.") || basename === ".npmrc" || normalized.includes("secret") || normalized.includes("credential");
+}
 
 export function classifyRiskFromDiffSummary(changedFiles: string[]): RiskLevel {
-  if (changedFiles.some((file) => secretFileNames.has(file.split(/[\\/]/).at(-1) ?? file) || file.includes("secret") || file.includes("credential"))) {
+  if (changedFiles.some((file) => isSecretFile(file))) {
     return "critical";
   }
   if (changedFiles.length > 50) {
