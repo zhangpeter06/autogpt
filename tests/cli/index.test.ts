@@ -1,8 +1,17 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWebServer } from "../../src/web/server.js";
+import { chooseOption } from "../../src/core/decisions.js";
+import { resolveRunMaxTasks } from "../../src/cli/index.js";
 import type { Server } from "node:http";
 
+const execFileAsync = promisify(execFile);
 const servers: Server[] = [];
+const tempDirs: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
@@ -19,6 +28,63 @@ afterEach(async () => {
         })
     )
   );
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe("cli commands", () => {
+  it("initializes a project, saves a goal, and reports state, queue summary, and recent events", async () => {
+    const projectRoot = await makeTempProject();
+
+    const init = await runCli("init", "--project", projectRoot, "--aggression", "conservative");
+    expect(init.stdout).toContain(`Initialized gptauto in ${resolve(projectRoot)}`);
+
+    const goal = await runCli("goal", "Ship the CLI", "--project", projectRoot);
+    expect(goal.stdout.trim()).toBe("Goal saved");
+
+    await chooseOption(projectRoot, {
+      taskId: null,
+      question: "Use temporary web API?",
+      options: ["yes", "no"],
+      recommended: "yes",
+      risk: "low",
+      reversible: true,
+      reason: "Task 10 requires a stub"
+    });
+
+    const status = await runCli("status", "--project", projectRoot);
+    const output = JSON.parse(status.stdout) as {
+      state: {
+        goal: string | null;
+        activeTaskId: string | null;
+        lastRunId: string | null;
+        updatedAt: string;
+      };
+      queue: {
+        queued: number;
+        completed: number;
+        blocked: number;
+      };
+      recentEvents: Array<{ source: string; time: string; summary: string }>;
+    };
+
+    expect(output.state.goal).toBe("Ship the CLI");
+    expect(output.state.activeTaskId).toBeNull();
+    expect(output.state.lastRunId).toBeNull();
+    expect(output.state.updatedAt).toEqual(expect.any(String));
+    expect(output.queue).toEqual({ queued: 0, completed: 0, blocked: 0 });
+    expect(output.recentEvents).toEqual([
+      expect.objectContaining({
+        source: "decision",
+        summary: "Use temporary web API? -> yes"
+      })
+    ]);
+  });
+
+  it("uses an overnight max task default only when --max-tasks is omitted", () => {
+    expect(resolveRunMaxTasks({ overnight: true })).toBe(50);
+    expect(resolveRunMaxTasks({ overnight: true, maxTasks: "3" })).toBe(3);
+    expect(resolveRunMaxTasks({ overnight: false })).toBe(1);
+  });
 });
 
 describe("web server stub", () => {
@@ -42,3 +108,15 @@ describe("web server stub", () => {
     });
   });
 });
+
+async function makeTempProject(): Promise<string> {
+  const projectRoot = await mkdtemp(join(tmpdir(), "gptauto-cli-"));
+  tempDirs.push(projectRoot);
+  return projectRoot;
+}
+
+async function runCli(...args: string[]): Promise<{ stdout: string; stderr: string }> {
+  return execFileAsync(process.execPath, ["--import", "tsx", "src/cli/index.ts", ...args], {
+    cwd: resolve(".")
+  });
+}

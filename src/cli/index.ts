@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { initProject, setProjectGoal } from "../core/project-state.js";
+import { listClaudeSync } from "../agents/claude-sync.js";
+import { listDecisions } from "../core/decisions.js";
+import { initProject, loadProjectState, setProjectGoal } from "../core/project-state.js";
 import { runOnce } from "../core/run-loop.js";
 import { listTasks } from "../core/task-queue.js";
 import type { Aggression } from "../core/types.js";
 import { createWebServer } from "../web/server.js";
 
 const program = new Command();
+const OVERNIGHT_MAX_TASKS = 50;
 
 program.name("gptauto").description("Local agentic development orchestrator").version("0.1.0");
 
@@ -35,9 +39,9 @@ program
   .option("--project <path>", "Project path", process.cwd())
   .option("--overnight", "Run until max tasks, max hours, or blocked")
   .option("--max-hours <hours>", "Maximum hours", "8")
-  .option("--max-tasks <count>", "Maximum tasks", "1")
-  .action(async (options: { project: string; overnight?: boolean; maxHours: string; maxTasks: string }) => {
-    const maxTasks = parsePositiveInteger(options.maxTasks, "--max-tasks");
+  .option("--max-tasks <count>", "Maximum tasks")
+  .action(async (options: { project: string; overnight?: boolean; maxHours: string; maxTasks?: string }) => {
+    const maxTasks = resolveRunMaxTasks(options);
     const maxHours = parsePositiveNumber(options.maxHours, "--max-hours");
     const deadline = Date.now() + maxHours * 60 * 60 * 1000;
     for (let index = 0; index < maxTasks; index += 1) {
@@ -57,13 +61,43 @@ program
   .command("status")
   .option("--project <path>", "Project path", process.cwd())
   .action(async (options: { project: string }) => {
-    const tasks = await listTasks(resolve(options.project));
+    const projectRoot = resolve(options.project);
+    const [state, tasks, decisions, claudeSync] = await Promise.all([
+      loadProjectState(projectRoot),
+      listTasks(projectRoot),
+      listDecisions(projectRoot),
+      listClaudeSync(projectRoot)
+    ]);
+    const recentEvents = [
+      ...decisions.map((decision) => ({
+        source: "decision",
+        time: decision.time,
+        summary: `${decision.question} -> ${decision.choice}`
+      })),
+      ...claudeSync.map((record) => ({
+        source: "claude-sync",
+        time: record.time,
+        summary: record.summary
+      }))
+    ]
+      .sort((left, right) => right.time.localeCompare(left.time))
+      .slice(0, 10);
+
     console.log(
       JSON.stringify(
         {
-          queued: tasks.queued.length,
-          completed: tasks.completed.length,
-          blocked: tasks.blocked.length
+          state: {
+            goal: state.goal,
+            activeTaskId: state.activeTaskId,
+            lastRunId: state.lastRunId,
+            updatedAt: state.updatedAt
+          },
+          queue: {
+            queued: tasks.queued.length,
+            completed: tasks.completed.length,
+            blocked: tasks.blocked.length
+          },
+          recentEvents
         },
         null,
         2
@@ -83,7 +117,9 @@ program
     });
   });
 
-await program.parseAsync(process.argv);
+if (isCliEntrypoint()) {
+  await program.parseAsync(process.argv);
+}
 
 function parseAggression(value: string): Aggression {
   if (value === "conservative" || value === "balanced" || value === "aggressive") {
@@ -106,4 +142,15 @@ function parsePositiveInteger(value: string, optionName: string): number {
     throw new Error(`${optionName} must be a positive integer`);
   }
   return parsed;
+}
+
+export function resolveRunMaxTasks(options: { overnight?: boolean; maxTasks?: string }): number {
+  if (options.maxTasks !== undefined) {
+    return parsePositiveInteger(options.maxTasks, "--max-tasks");
+  }
+  return options.overnight ? OVERNIGHT_MAX_TASKS : 1;
+}
+
+function isCliEntrypoint(): boolean {
+  return process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 }
