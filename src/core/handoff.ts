@@ -5,6 +5,7 @@ import { getRunDir } from "./paths.js";
 export interface HandoffInput {
   goal: string;
   currentTask: string;
+  lastCompletedTask: string | null;
   changedFiles: string[];
   verification: string;
   decisions: string[];
@@ -25,6 +26,10 @@ ${input.goal}
 ## Current Task
 
 ${input.currentTask}
+
+## Last Completed Task
+
+${input.lastCompletedTask ?? "No completed task recorded"}
 
 ## Changed Files
 
