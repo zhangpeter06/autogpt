@@ -1,13 +1,26 @@
 import { runShellCommand } from "./commands.js";
 
 export async function getChangedFiles(projectRoot: string): Promise<string[]> {
-  const result = await runShellCommand("git diff --name-only", projectRoot);
-  if (result.exitCode !== 0) {
+  const results = await Promise.all([
+    runShellCommand("git diff --name-only", projectRoot),
+    runShellCommand("git diff --cached --name-only", projectRoot),
+    runShellCommand("git ls-files --others --exclude-standard", projectRoot)
+  ]);
+
+  const successfulResults = results.filter((result) => result.exitCode === 0);
+  if (successfulResults.length === 0) {
     return [];
   }
 
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const changedFiles = new Set<string>();
+  for (const result of successfulResults) {
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const file = line.trim();
+      if (file) {
+        changedFiles.add(file);
+      }
+    }
+  }
+
+  return [...changedFiles];
 }
