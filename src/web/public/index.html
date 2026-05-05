@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gptauto Web Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local operations</p>
+        <h1>gptauto Web Console</h1>
+      </div>
+      <button id="refresh" type="button">Refresh</button>
+    </header>
+
+    <main>
+      <section class="dashboard" aria-label="Dashboard">
+        <article class="metric">
+          <span>Queued</span>
+          <strong id="queued-count">-</strong>
+        </article>
+        <article class="metric">
+          <span>Completed</span>
+          <strong id="completed-count">-</strong>
+        </article>
+        <article class="metric">
+          <span>Blocked</span>
+          <strong id="blocked-count">-</strong>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Tasks</h2>
+          <span id="tasks-summary" class="summary">Loading</span>
+        </div>
+        <div id="tasks-list" class="stack"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Decisions</h2>
+          <span id="decisions-summary" class="summary">Loading</span>
+        </div>
+        <div id="decisions-list" class="stack"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Claude Sync</h2>
+          <span id="claude-sync-summary" class="summary">Loading</span>
+        </div>
+        <div id="claude-sync-list" class="stack"></div>
+      </section>
+    </main>
+
+    <div id="status" class="status" role="status"></div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
